@@ -1,0 +1,15 @@
+# Dépendances et builds
+node_modules/
+.next/
+*.tsbuildinfo
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Données locales (profils, CV, PDF générés) : jamais dans git (RGPD)
+backend/data/
