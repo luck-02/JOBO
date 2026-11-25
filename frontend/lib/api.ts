@@ -36,25 +36,43 @@ export interface Generation {
     checks: AtsCheck[]; expressions_a_eviter: string[]; bourrage: string[];
   };
 }
-export type Statut = "a_envoyer" | "envoyee" | "relancee" | "entretien" | "offre" | "refus" | "abandon";
+export type Statut = "brouillon" | "a_envoyer" | "envoyee" | "relancee" | "entretien" | "offre" | "refus" | "abandon";
 export interface Candidature {
   id: string; intitule: string; entreprise: string; lieu: string; url: string; offer_id: string; statut: Statut;
   date_creation: string; date_envoi: string; relance_prevue: string; relance_due: boolean; contact: string; notes: string;
   fichiers: Record<string, string>; score_ats: number | null; adequation: number | null;
   historique: { date: string; statut: Statut }[];
+  reponses: { question: string; reponse: string }[];
 }
 export interface CrmStats {
   total: number; par_statut: Record<Statut, number>; envoyees: number; taux_reponse: number; taux_entretien: number;
   relances_a_faire: number; cette_semaine: number;
 }
 export const STATUT_LABEL: Record<Statut, string> = {
-  a_envoyer: "À envoyer", envoyee: "Envoyée", relancee: "Relancée", entretien: "Entretien",
+  brouillon: "Brouillon", a_envoyer: "À envoyer", envoyee: "Envoyée", relancee: "Relancée", entretien: "Entretien",
   offre: "Offre reçue", refus: "Refus", abandon: "Abandon",
 };
 
 export interface Company {
   nom: string; siren: string; activite: string; date_creation: string; effectif: string; adresse: string;
   dirigeants: string[]; categorie: string; source: string;
+}
+
+export type TypeReaction = "postuler" | "passer" | "favori";
+export type Raison = "metier" | "lieu" | "contrat" | "entreprise";
+export const RAISON_LABEL: Record<Raison, string> = {
+  metier: "Le métier", lieu: "Le lieu", contrat: "Le contrat", entreprise: "L'entreprise",
+};
+export interface Reaction {
+  offer_id: string; type: TypeReaction; date: string; horodatage: string;
+  intitule: string; entreprise: string; lieu: string; contrat: Contrat;
+  raison: Raison | null; rappel_le: string; rappel_actif: boolean; rappel_du: boolean;
+}
+export interface Preferences { contrats: Contrat[]; departements: string[]; mots_cles: string }
+
+/** Erreur HTTP avec son code (ex. 401 = compte requis). */
+export class ApiError extends Error {
+  constructor(message: string, public status: number) { super(message); }
 }
 
 let memoryId: string | null = null;
@@ -83,7 +101,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     let msg = `Erreur ${res.status}`;
     try { msg = (await res.json()).detail ?? msg; } catch {}
-    throw new Error(typeof msg === "string" ? msg : "Requête invalide");
+    throw new ApiError(typeof msg === "string" ? msg : "Requête invalide", res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -99,7 +117,7 @@ export const api = {
     call<{ id: string; intitule: string; entreprise: string }>("/api/offers/import", {
       method: "POST", body: JSON.stringify({ url, texte }),
     }),
-  questions: (id: string) => call<Question[]>(`/api/offers/${encodeURIComponent(id)}/questions`),
+  questions: (id: string, n = 10) => call<Question[]>(`/api/offers/${encodeURIComponent(id)}/questions?n=${n}`),
   analyse: (id: string, reponses: { question: string; reponse: string }[]) =>
     call<Analysis>(`/api/offers/${encodeURIComponent(id)}/analyse`, {
       method: "POST", body: JSON.stringify({ reponses }),
@@ -117,6 +135,21 @@ export const api = {
     call<Candidature>(`/api/candidatures/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCandidature: (id: string) =>
     call<{ ok: boolean }>(`/api/candidatures/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  preferences: () => call<Preferences>("/api/preferences"),
+  savePreferences: (p: Preferences) => call<Preferences>("/api/preferences", { method: "PUT", body: JSON.stringify(p) }),
+  pile: () => call<OfferSummary[]>("/api/swipe/pile"),
+  react: (offer_id: string, type: TypeReaction) =>
+    call<Reaction>("/api/swipe/reactions", { method: "POST", body: JSON.stringify({ offer_id, type }) }),
+  raison: (offer_id: string, raison: Raison | null) =>
+    call<Reaction>(`/api/swipe/reactions/${encodeURIComponent(offer_id)}/raison`, { method: "PATCH", body: JSON.stringify({ raison }) }),
+  rappel: (offer_id: string, actif: boolean) =>
+    call<Reaction>(`/api/swipe/reactions/${encodeURIComponent(offer_id)}/rappel`, { method: "PATCH", body: JSON.stringify({ actif }) }),
+  undo: (offer_id: string) =>
+    call<{ ok: boolean }>(`/api/swipe/reactions/${encodeURIComponent(offer_id)}`, { method: "DELETE" }),
+  brouillon: (offer_id: string, reponses: { question: string; reponse: string }[]) =>
+    call<Candidature>(`/api/swipe/reactions/${encodeURIComponent(offer_id)}/brouillon`, { method: "POST", body: JSON.stringify({ reponses }) }),
+  passees: () => call<Reaction[]>("/api/swipe/passees"),
+  favoris: () => call<Reaction[]>("/api/swipe/favoris"),
   quota: () => call<{ restant: number; limite: number }>("/api/quota"),
   generate: (id: string, kinds: string[], instructions: string, reponses: { question: string; reponse: string }[]) =>
     call<Generation>(`/api/offers/${encodeURIComponent(id)}/generate`, {

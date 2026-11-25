@@ -21,6 +21,11 @@ Produit freemium : invité (quota bas, pas d'image ni de questions IA), inscrit,
 - CRM : règles dans `domain/tracking.py` (statuts, relance J+7, stats), `TrackingService`, routes `/api/candidatures`.
   Toute lecture ou écriture vérifie que la candidature appartient bien au demandeur.
 
+- Swipe mobile (Accueil sur mobile) : règles dans `domain/swipe.py` (réactions postuler / passer / favori, raison
+  facultative qui affine la pile sans IA, offres passées listées 30 jours, rappel favori unique à J+7),
+  `SwipeService`, routes `/api/swipe/*` et `/api/preferences`. Postuler ou favori exige un profil importé
+  (`is_onboarded`, en attendant les vrais comptes). Statut `brouillon` dans le Suivi.
+
 ## Règles produit non négociables
 - L'IA n'invente jamais une expérience, un chiffre, une date ou un outil. Postes, entreprises et dates
   sont recopiés depuis le profil par `adapters/llm/common.py`, jamais pris dans la réponse de l'IA.

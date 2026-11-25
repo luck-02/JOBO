@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from .questions import Answer
+from .swipe import Preferences, Reaction
 from .tracking import Candidature
 from .models import (
     CompanyInfo,
@@ -126,3 +127,23 @@ class CandidatureRepository(Protocol):
     def find_by_offer(self, owner_id: str, offer_id: str) -> "Candidature | None": ...
 
     def delete(self, cand_id: str) -> None: ...
+
+
+class ReactionRepository(Protocol):
+    """Réactions du swipe (postuler, pas pour moi, favori). Une seule réaction par offre et par personne."""
+
+    def save(self, r: "Reaction") -> None: ...
+
+    def get(self, owner_id: str, offer_id: str) -> "Reaction | None": ...
+
+    def list(self, owner_id: str) -> "list[Reaction]": ...
+
+    def delete(self, owner_id: str, offer_id: str) -> None: ...
+
+
+class PreferencesRepository(Protocol):
+    """Préférences de recherche structurées (contrats, départements, mots-clés)."""
+
+    def get(self, owner_id: str) -> "Preferences | None": ...
+
+    def save(self, owner_id: str, p: "Preferences") -> None: ...

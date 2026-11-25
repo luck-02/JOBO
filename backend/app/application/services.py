@@ -18,6 +18,10 @@ from ..domain.models import (
 )
 from ..domain.errors import UserFacingError
 from ..domain.questions import Answer, Question, analyse_with_answers, clean_answers, questions_for_offer
+from ..domain.swipe import (
+    Preferences, Raison, Reaction, TypeReaction, composer_pile, nettoyer_preferences, nouvelle_reaction,
+    passees_visibles,
+)
 from ..domain.tracking import Candidature, Etape, Statut, Stats, changer_statut, stats
 from ..domain.ports import (
     CandidatureRepository,
@@ -31,7 +35,9 @@ from ..domain.ports import (
     OfferLinkReader,
     OfferSource,
     PdfRenderer,
+    PreferencesRepository,
     ProfileRepository,
+    ReactionRepository,
     UsageLimiter,
 )
 
@@ -46,6 +52,10 @@ class ProfileIncomplete(Exception):
 
 class QuotaExceeded(Exception):
     pass
+
+
+class AccountRequired(Exception):
+    """Les invités swipent librement ; postuler ou mettre en favori demande un compte."""
 
 
 @dataclass
@@ -160,10 +170,11 @@ class TrackingService:
         if not intitule.strip() or not entreprise.strip():
             raise UserFacingError("Indique au moins l'intitulé et l'entreprise")
         t = self.today()
+        depart = Statut.BROUILLON if statut == Statut.BROUILLON else Statut.A_ENVOYER
         c = Candidature(id="cand-" + uuid.uuid4().hex[:12], owner_id=owner_id, intitule=intitule.strip()[:200],
                         entreprise=entreprise.strip()[:200], lieu=lieu.strip()[:120], url=url.strip()[:2000],
-                        offer_id=offer_id, date_creation=t.isoformat(),
-                        historique=[Etape(t.isoformat(), Statut.A_ENVOYER)])
+                        offer_id=offer_id, statut=depart, date_creation=t.isoformat(),
+                        historique=[Etape(t.isoformat(), depart)])
         changer_statut(c, statut, t)
         self.repo.save(c)
         return c
@@ -191,6 +202,8 @@ class TrackingService:
         """Après chaque génération : l'offre entre (ou est mise à jour) dans le suivi."""
         c = self.repo.find_by_offer(owner_id, offer.id) or self.add(
             owner_id, offer.intitule, offer.entreprise, offer.lieu, offer.url, offer_id=offer.id)
+        if c.statut == Statut.BROUILLON:          # le brouillon du swipe devient une candidature prête à envoyer
+            changer_statut(c, Statut.A_ENVOYER, self.today())
         for kind, name in result.files.items():
             c.fichiers[kind] = f"/api/files/{result.id}/{name}"
         if result.ats:
@@ -276,6 +289,116 @@ class GenerationService:
         if self.tracking is not None:
             result.candidature_id = self.tracking.record_generation(owner_id, offer, result).id
         return result
+
+
+@dataclass
+class SwipeService:
+    """Swipe d'offres mobile : pile filtrée par les préférences, réactions, annulation, listes."""
+    offers: OfferService
+    profiles: ProfileService
+    tracking: TrackingService
+    reactions: ReactionRepository
+    prefs: PreferencesRepository
+    today: Callable[[], date] = field(default=date.today)
+    now: Callable[[], str] = field(default=lambda: __import__("datetime").datetime.now().isoformat())
+    max_requetes: int = 6
+
+    def preferences(self, owner_id: str) -> Preferences:
+        p = self.prefs.get(owner_id)
+        if p is not None:
+            return p
+        return Preferences()
+
+    def save_preferences(self, owner_id: str, contrats: list[str], departements: list[str],
+                         mots_cles: str) -> Preferences:
+        p = nettoyer_preferences(contrats, departements, mots_cles)
+        self.prefs.save(owner_id, p)
+        return p
+
+    def pile(self, owner_id: str, taille: int = 20) -> list[OfferSummary]:
+        p = self.preferences(owner_id)
+        contrats = list(p.contrats) or [None]
+        lieux = list(p.departements) or [""]
+        candidates: list[OfferSummary] = []
+        for i, (c, l) in enumerate((c, l) for c in contrats for l in lieux):
+            if i >= self.max_requetes:
+                break
+            candidates += self.offers.search(OfferQuery(mots_cles=p.mots_cles, lieu=l, contrat=c, taille=50))
+        # Plusieurs contrats : on alterne pour ne pas montrer tous les CDI avant la première alternance
+        candidates = _entrelacer(candidates, contrats)
+        return composer_pile(candidates, self.reactions.list(owner_id), taille)
+
+    def reagir(self, owner_id: str, offer_id: str, type_: TypeReaction) -> Reaction:
+        if type_ in (TypeReaction.POSTULER, TypeReaction.FAVORI) and not self.profiles.get(owner_id).is_onboarded():
+            raise AccountRequired()
+        offer = self.offers.get(offer_id)
+        r = nouvelle_reaction(owner_id, offer, type_, self.today(), self.now())
+        self.reactions.save(r)
+        return r
+
+    def _mine(self, owner_id: str, offer_id: str) -> Reaction:
+        r = self.reactions.get(owner_id, offer_id)
+        if r is None:
+            raise NotFound(offer_id)
+        return r
+
+    def donner_raison(self, owner_id: str, offer_id: str, raison: Raison | None) -> Reaction:
+        r = self._mine(owner_id, offer_id)
+        if r.type != TypeReaction.PASSER:
+            raise UserFacingError("La raison ne concerne que les offres passées")
+        r.raison = raison
+        self.reactions.save(r)
+        return r
+
+    def annuler(self, owner_id: str, offer_id: str) -> None:
+        """Annuler un swipe (gratuit) : l'offre revient dans la pile. Un brouillon sans fichier est retiré du suivi."""
+        self._mine(owner_id, offer_id)
+        self.reactions.delete(owner_id, offer_id)
+        c = self.tracking.repo.find_by_offer(owner_id, offer_id)
+        if c is not None and c.statut == Statut.BROUILLON and not c.fichiers:
+            self.tracking.repo.delete(c.id)
+
+    def brouillon(self, owner_id: str, offer_id: str, answers: list[Answer]) -> Candidature:
+        """« Garder en brouillon » après un swipe à droite : entre dans le Suivi avec les réponses."""
+        r = self._mine(owner_id, offer_id)
+        if r.type != TypeReaction.POSTULER:
+            raise UserFacingError("Swipe d'abord l'offre à droite")
+        offer = self.offers.get(offer_id)
+        c = self.tracking.repo.find_by_offer(owner_id, offer_id) or self.tracking.add(
+            owner_id, offer.intitule, offer.entreprise, offer.lieu, offer.url, Statut.BROUILLON, offer.id)
+        c.reponses = [{"question": a.question, "reponse": a.reponse} for a in clean_answers(answers)]
+        self.tracking.repo.save(c)
+        return c
+
+    def passees(self, owner_id: str) -> list[Reaction]:
+        return passees_visibles(self.reactions.list(owner_id), self.today())
+
+    def favoris(self, owner_id: str) -> list[Reaction]:
+        return [r for r in self.reactions.list(owner_id) if r.type == TypeReaction.FAVORI]
+
+    def rappel(self, owner_id: str, offer_id: str, actif: bool) -> Reaction:
+        """Le rappel du favori est unique : vu ou désactivé, il ne revient pas."""
+        r = self._mine(owner_id, offer_id)
+        if r.type != TypeReaction.FAVORI:
+            raise UserFacingError("Seuls les favoris ont un rappel")
+        r.rappel_actif = actif and bool(r.rappel_le)
+        self.reactions.save(r)
+        return r
+
+
+def _entrelacer(offres: list[OfferSummary], contrats: list) -> list[OfferSummary]:
+    if len(contrats) < 2:
+        return offres
+    groupes: dict[str, list[OfferSummary]] = {}
+    for o in offres:
+        groupes.setdefault(str(getattr(o.contrat, "value", o.contrat)), []).append(o)
+    out: list[OfferSummary] = []
+    files = list(groupes.values())
+    while any(files):
+        for f in files:
+            if f:
+                out.append(f.pop(0))
+    return out
 
 
 def _slug(text: str) -> str:

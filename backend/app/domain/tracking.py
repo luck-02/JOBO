@@ -9,6 +9,7 @@ DELAI_RELANCE_JOURS = 7
 
 
 class Statut(str, Enum):
+    BROUILLON = "brouillon"      # swipe à droite gardé pour plus tard (ou quota épuisé)
     A_ENVOYER = "a_envoyer"
     ENVOYEE = "envoyee"
     RELANCEE = "relancee"
@@ -48,6 +49,7 @@ class Candidature:
     score_ats: int | None = None
     adequation: float | None = None
     historique: list[Etape] = field(default_factory=list)
+    reponses: list[dict[str, str]] = field(default_factory=list)   # réponses aux questions (brouillon de swipe)
 
     def relance_due(self, today: date) -> bool:
         return (self.statut in EN_ATTENTE_DE_REPONSE and bool(self.relance_prevue)
@@ -69,7 +71,7 @@ def changer_statut(c: Candidature, statut: Statut, today: date) -> Candidature:
         c.relance_prevue = (today + timedelta(days=DELAI_RELANCE_JOURS)).isoformat()
     elif statut in REPONDUES or statut == Statut.ABANDON:
         c.relance_prevue = ""
-    elif statut == Statut.A_ENVOYER:
+    elif statut in (Statut.A_ENVOYER, Statut.BROUILLON):
         c.relance_prevue = ""
     c.historique.append(Etape(iso, statut))
     return c

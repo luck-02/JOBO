@@ -137,3 +137,49 @@ h3 { font-size: .95rem; margin: 14px 0 4px; }
 .hl.partiel { background: #fff4e0; color: var(--warn); }
 .hl.non { background: #fdecec; color: var(--bad); }
 .legend { margin-top: 6px; }
+
+/* ---------- Swipe d'offres (mobile) ---------- */
+.swipe { display: flex; flex-direction: column; gap: 10px; overflow-x: clip; }
+.swipe-top { display: flex; justify-content: space-between; gap: 8px; }
+.swipe-top .chip { text-decoration: none; }
+.deck { position: relative; height: min(58vh, 440px); }
+.deck-empty { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; text-align: center; }
+.swipe-card { position: absolute; inset: 0; margin: 0; display: flex; flex-direction: column; justify-content: flex-end;
+  gap: 6px; padding: 20px; border-radius: 20px; touch-action: none; user-select: none; cursor: grab;
+  background: linear-gradient(180deg, var(--primary-soft) 0%, #fff 55%); box-shadow: 0 8px 24px #17203314; overflow: hidden; }
+.swipe-card .pill { align-self: flex-start; }
+.swipe-card.behind { transform: scale(.95) translateY(10px); opacity: .7; pointer-events: none; }
+.swipe-title { font-size: 1.35rem; font-weight: 800; line-height: 1.25; }
+.swipe-ent { font-size: 1.05rem; color: var(--muted); }
+.swipe-hint { margin-top: 10px; }
+.stamp { position: absolute; top: 18px; padding: 4px 12px; border: 3px solid; border-radius: 10px; font-weight: 800;
+  text-transform: uppercase; font-size: .9rem; background: #fff; }
+.stamp.postuler { left: 18px; color: var(--ok); transform: rotate(-10deg); }
+.stamp.passer { right: 18px; color: var(--bad); transform: rotate(10deg); }
+.stamp.favori { left: 50%; transform: translateX(-50%); color: var(--warn); }
+.swipe-actions { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 4px; }
+.round { width: 60px; height: 60px; border-radius: 50%; border: 1px solid var(--line); background: #fff; font-size: 1.5rem;
+  cursor: pointer; box-shadow: 0 2px 8px #17203314; display: grid; place-items: center; }
+.round.small-r { width: 46px; height: 46px; font-size: 1.2rem; color: var(--muted); }
+.round.no { color: var(--bad); }
+.round.fav { color: var(--warn); width: 50px; height: 50px; }
+.round.yes { color: var(--ok); }
+.round:disabled { opacity: .35; cursor: default; }
+.toast { position: fixed; left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom)); z-index: 20;
+  background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; box-shadow: 0 6px 20px #17203322;
+  max-width: 696px; margin: 0 auto; }
+.toast .chips { padding-bottom: 2px; margin-top: 6px; }
+.toast-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.toast-row h2 { margin: 0; }
+.sheet-bg { position: fixed; inset: 0; z-index: 30; background: #17203366; display: flex; align-items: flex-end; }
+.sheet { width: 100%; max-width: 720px; margin: 0 auto; max-height: 88vh; overflow-y: auto; background: #fff;
+  border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+.sheet .btn.block { margin-top: 8px; }
+.chips.wrap { flex-wrap: wrap; }
+.add-offer { margin-top: 18px; }
+.add-offer summary { cursor: pointer; color: var(--primary); font-weight: 600; margin-bottom: 8px; }
+.pill.st-brouillon { background: #f1f2f5; color: var(--muted); }
+.favs li { padding: 8px 0; border-top: 1px solid var(--line); }
+.favs li:first-child { border-top: none; }
+.favs .actions { margin: 6px 0 0; }
+.favs .btn.ghost { padding: 6px 0; }

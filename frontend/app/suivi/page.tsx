@@ -1,12 +1,13 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { api, API_URL, STATUT_LABEL, type Candidature, type CrmStats, type Statut } from "../../lib/api";
+import { api, API_URL, CONTRAT_LABEL, STATUT_LABEL, type Candidature, type CrmStats, type Reaction, type Statut } from "../../lib/api";
 
 const STATUTS = Object.keys(STATUT_LABEL) as Statut[];
 const FILTRES: { key: string; label: string; match: (c: Candidature) => boolean }[] = [
   { key: "tout", label: "Tout", match: () => true },
   { key: "relancer", label: "À relancer", match: (c) => c.relance_due },
+  { key: "brouillon", label: "Brouillons", match: (c) => c.statut === "brouillon" },
   { key: "a_envoyer", label: "À envoyer", match: (c) => c.statut === "a_envoyer" },
   { key: "attente", label: "En attente", match: (c) => c.statut === "envoyee" || c.statut === "relancee" },
   { key: "entretien", label: "Entretiens", match: (c) => c.statut === "entretien" || c.statut === "offre" },
@@ -21,6 +22,22 @@ export default function Suivi() {
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [favoris, setFavoris] = useState<Reaction[]>([]);
+
+  useEffect(() => { api.favoris().then(setFavoris).catch(() => {}); }, []);
+
+  async function rappel(id: string, actif: boolean) {
+    try {
+      const r = await api.rappel(id, actif);
+      setFavoris((xs) => xs.map((x) => (x.offer_id === id ? r : x)));
+    } catch (e) { setError((e as Error).message); }
+  }
+
+  async function retirerFavori(id: string) {
+    try { await api.undo(id); setFavoris((xs) => xs.filter((x) => x.offer_id !== id)); }
+    catch (e) { setError((e as Error).message); }
+  }
+
   async function refresh() {
     try {
       const [l, s] = await Promise.all([api.candidatures(), api.crmStats()]);
@@ -66,6 +83,33 @@ export default function Suivi() {
         </section>
       )}
 
+      {favoris.length > 0 && (
+        <section className="card">
+          <h2>★ Favoris</h2>
+          <ul className="list favs">
+            {favoris.map((f) => (
+              <li key={f.offer_id} className={f.rappel_du ? "fav-due" : ""}>
+                <Link href={`/offres/${encodeURIComponent(f.offer_id)}`}><b>{f.intitule}</b></Link>
+                <div className="small muted">{[f.entreprise, f.lieu, CONTRAT_LABEL[f.contrat]].filter(Boolean).join(" · ")}</div>
+                {f.rappel_du && (
+                  <p className="due small">🔔 Tu l&apos;as gardée il y a une semaine : tu postules ?
+                    <button className="btn ghost small" onClick={() => rappel(f.offer_id, false)}>C&apos;est vu</button></p>
+                )}
+                <div className="actions">
+                  <Link className="btn small" href={`/offres/${encodeURIComponent(f.offer_id)}`}>Postuler</Link>
+                  {!f.rappel_du && f.rappel_le && (
+                    <button className="btn ghost small" onClick={() => rappel(f.offer_id, !f.rappel_actif)}>
+                      {f.rappel_actif ? `Rappel le ${fr(f.rappel_le)} · désactiver` : "Réactiver le rappel"}
+                    </button>
+                  )}
+                  <button className="btn ghost small danger" onClick={() => retirerFavori(f.offer_id)}>Retirer</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="chips">
         {FILTRES.map((f) => (
           <button key={f.key} className={`chip ${filtre === f.key ? "on" : ""}`} onClick={() => setFiltre(f.key)}>
@@ -103,6 +147,9 @@ export default function Suivi() {
             </div>
 
             <div className="actions">
+              {c.statut === "brouillon" && c.offer_id && (
+                <Link className="btn primary" href={`/offres/${encodeURIComponent(c.offer_id)}`}>Générer CV + lettre</Link>
+              )}
               {c.statut === "a_envoyer" && (
                 <button className="btn primary" onClick={() => patch(c.id, { statut: "envoyee" })}>J&apos;ai postulé</button>
               )}
