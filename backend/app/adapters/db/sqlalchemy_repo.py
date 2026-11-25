@@ -9,6 +9,7 @@ from sqlalchemy import JSON, Column, DateTime, String, create_engine, func
 from sqlalchemy.orm import Session, declarative_base
 
 from ...domain.models import ContractType, Experience, Formation, Offer, Profile
+from ...domain.swipe import Preferences, Raison, Reaction, TypeReaction
 from ...domain.tracking import Candidature, Etape, Statut
 
 Base = declarative_base()
@@ -129,3 +130,78 @@ class SqlCandidatureRepository:
             if row:
                 s.delete(row)
                 s.commit()
+
+
+def _engine(url: str):
+    kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {}
+    engine = create_engine(url, **kwargs)
+    Base.metadata.create_all(engine)
+    return engine
+
+
+class ReactionRow(Base):
+    __tablename__ = "reactions"
+    owner_id = Column(String(64), primary_key=True)
+    offer_id = Column(String(64), primary_key=True)
+    data = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+def _reaction_from_dict(d: dict) -> Reaction:
+    d = dict(d)
+    d["type"] = TypeReaction(d["type"])
+    d["raison"] = Raison(d["raison"]) if d.get("raison") else None
+    return Reaction(**d)
+
+
+class SqlReactionRepository:
+    def __init__(self, url: str):
+        self._engine = _engine(url)
+
+    def save(self, r: Reaction) -> None:
+        with Session(self._engine) as s:
+            s.merge(ReactionRow(owner_id=r.owner_id, offer_id=r.offer_id, data=json.loads(json.dumps(asdict(r)))))
+            s.commit()
+
+    def get(self, owner_id: str, offer_id: str) -> Reaction | None:
+        with Session(self._engine) as s:
+            row = s.get(ReactionRow, (owner_id, offer_id))
+            return _reaction_from_dict(row.data) if row else None
+
+    def list(self, owner_id: str) -> list[Reaction]:
+        with Session(self._engine) as s:
+            rows = s.query(ReactionRow).filter_by(owner_id=owner_id).all()
+            return sorted((_reaction_from_dict(r.data) for r in rows), key=lambda r: r.horodatage, reverse=True)
+
+    def delete(self, owner_id: str, offer_id: str) -> None:
+        with Session(self._engine) as s:
+            row = s.get(ReactionRow, (owner_id, offer_id))
+            if row:
+                s.delete(row)
+                s.commit()
+
+
+class PreferencesRow(Base):
+    __tablename__ = "preferences"
+    owner_id = Column(String(64), primary_key=True)
+    data = Column(JSON, nullable=False)
+
+
+class SqlPreferencesRepository:
+    def __init__(self, url: str):
+        self._engine = _engine(url)
+
+    def get(self, owner_id: str) -> Preferences | None:
+        with Session(self._engine) as s:
+            row = s.get(PreferencesRow, owner_id)
+            if not row:
+                return None
+            d = dict(row.data)
+            return Preferences([ContractType(c) for c in d.get("contrats", [])], list(d.get("departements", [])),
+                               d.get("mots_cles", ""))
+
+    def save(self, owner_id: str, p: Preferences) -> None:
+        with Session(self._engine) as s:
+            s.merge(PreferencesRow(owner_id=owner_id, data={
+                "contrats": [c.value for c in p.contrats], "departements": p.departements, "mots_cles": p.mots_cles}))
+            s.commit()

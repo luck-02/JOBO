@@ -450,3 +450,106 @@ def test_crm_crud_and_isolation():
     assert st["total"] == 1 and st["taux_entretien"] == 100
     assert client.delete(f"/api/candidatures/{c['id']}", headers=hdr).json()["ok"]
     assert client.get("/api/candidatures", headers=hdr).json() == []
+
+
+# ---------------- Swipe d'offres (mobile) ----------------
+
+from datetime import date as _date  # noqa: E402
+
+from app.domain.models import OfferSummary  # noqa: E402
+from app.domain.swipe import (  # noqa: E402
+    Raison, TypeReaction, composer_pile, nettoyer_preferences, nouvelle_reaction, passees_visibles,
+)
+
+
+def _o(id, intitule="Alternance Business Developer", ent="A", lieu="44 - Nantes", contrat=ContractType.ALTERNANCE):
+    return OfferSummary(id, intitule, ent, lieu, contrat)
+
+
+def test_pile_hides_swiped_and_refines_with_reasons():
+    today = _date(2026, 11, 25)
+    offres = [_o("1"), _o("2", ent="B"), _o("3", "Stage Business Developer", ent="C"),
+              _o("4", "Alternance Data Analyst", ent="D", lieu="35 - Rennes"), _o("5", "Alternance Comptable", ent="E", lieu="35 - Rennes")]
+    passe_metier = nouvelle_reaction("u", offres[0], TypeReaction.PASSER, today)
+    passe_metier.raison = Raison.METIER
+    passe_ent = nouvelle_reaction("u", _o("x", ent="D"), TypeReaction.PASSER, today)
+    passe_ent.raison = Raison.ENTREPRISE
+    pile = [o.id for o in composer_pile(offres, [passe_metier, passe_ent])]
+    assert "1" not in pile                       # déjà swipée : masquée pour toujours
+    assert "4" not in pile                       # entreprise refusée : toutes ses offres disparaissent
+    assert pile == ["5", "2", "3"]               # même métier refusé -> fin de pile, ordre gardé sinon
+
+
+def test_passees_listed_30_days_and_favori_reminder_once():
+    today = _date(2026, 11, 25)
+    vieille = nouvelle_reaction("u", _o("1"), TypeReaction.PASSER, _date(2026, 10, 1))
+    recente = nouvelle_reaction("u", _o("2"), TypeReaction.PASSER, _date(2026, 11, 20))
+    assert [r.offer_id for r in passees_visibles([vieille, recente], today)] == ["2"]
+    fav = nouvelle_reaction("u", _o("3"), TypeReaction.FAVORI, today)
+    assert fav.rappel_le == "2026-12-02" and not fav.rappel_du(today) and fav.rappel_du(_date(2026, 12, 2))
+    fav.rappel_actif = False
+    assert not fav.rappel_du(_date(2026, 12, 3))
+
+
+def test_preferences_multi_contrats_validated():
+    p = nettoyer_preferences(["alternance", "cdi", "cdi"], ["44", "35"], " commercial ")
+    assert [c.value for c in p.contrats] == ["alternance", "cdi"] and p.mots_cles == "commercial"
+    with pytest.raises(ValueError):
+        nettoyer_preferences(["freelance"], [], "")
+    with pytest.raises(ValueError):
+        nettoyer_preferences([], ["Paris"], "")
+
+
+def test_swipe_api_flow():
+    h = {"X-Client-Id": "swipe-client-001"}
+    assert client.put("/api/preferences", json={"contrats": ["alternance", "stage"], "departements": ["44"]},
+                      headers=h).status_code == 200
+    assert client.put("/api/preferences", json={"contrats": ["xx"]}, headers=h).status_code == 422
+    pile = client.get("/api/swipe/pile", headers=h).json()
+    assert pile and all(o["contrat"] in ("alternance", "stage") and o["lieu"].startswith("44") for o in pile)
+    assert {o["contrat"] for o in pile[:2]} == {"alternance", "stage"}   # contrats entrelacés
+
+    # Invité : peut passer, mais postuler ou favori demande un compte
+    first = pile[0]["id"]
+    assert client.post("/api/swipe/reactions", json={"offer_id": first, "type": "postuler"}, headers=h).status_code == 401
+    assert client.post("/api/swipe/reactions", json={"offer_id": first, "type": "passer"}, headers=h).status_code == 200
+    assert client.patch(f"/api/swipe/reactions/{first}/raison", json={"raison": "lieu"}, headers=h).json()["raison"] == "lieu"
+    assert first not in [o["id"] for o in client.get("/api/swipe/pile", headers=h).json()]
+    assert [r["offer_id"] for r in client.get("/api/swipe/passees", headers=h).json()] == [first]
+    # Annuler : l'offre revient
+    assert client.delete(f"/api/swipe/reactions/{first}", headers=h).status_code == 200
+    assert first in [o["id"] for o in client.get("/api/swipe/pile", headers=h).json()]
+
+    # Avec un compte : postuler -> brouillon dans le suivi, favori avec rappel
+    client.put("/api/profile", json=PROFILE, headers=h)
+    assert client.post("/api/swipe/reactions", json={"offer_id": first, "type": "postuler"}, headers=h).status_code == 200
+    qs = client.get(f"/api/offers/{first}/questions", params={"n": 3}, headers=h).json()
+    assert len(qs) == 3
+    c = client.post(f"/api/swipe/reactions/{first}/brouillon",
+                    json={"reponses": [{"question": qs[0]["question"], "reponse": "Oui, en projet d'école"}]},
+                    headers=h).json()
+    assert c["statut"] == "brouillon" and c["reponses"][0]["reponse"] == "Oui, en projet d'école"
+    assert [x["statut"] for x in client.get("/api/candidatures", headers=h).json()] == ["brouillon"]
+    # Annuler un postuler retire le brouillon sans fichier
+    client.delete(f"/api/swipe/reactions/{first}", headers=h)
+    assert client.get("/api/candidatures", headers=h).json() == []
+
+    second = pile[1]["id"]
+    fav = client.post("/api/swipe/reactions", json={"offer_id": second, "type": "favori"}, headers=h).json()
+    assert fav["rappel_actif"] and fav["rappel_le"] and not fav["rappel_du"]
+    assert client.patch(f"/api/swipe/reactions/{second}/rappel", json={"actif": False}, headers=h).json()["rappel_actif"] is False
+    assert [r["offer_id"] for r in client.get("/api/swipe/favoris", headers=h).json()] == [second]
+    # Isolation : un autre navigateur ne voit rien
+    assert client.get("/api/swipe/favoris", headers={"X-Client-Id": "swipe-client-002"}).json() == []
+    assert client.delete(f"/api/swipe/reactions/{second}", headers={"X-Client-Id": "swipe-client-002"}).status_code == 404
+
+
+def test_generation_turns_brouillon_into_a_envoyer():
+    h = {"X-Client-Id": "swipe-client-003"}
+    client.put("/api/profile", json=PROFILE, headers=h)
+    client.post("/api/swipe/reactions", json={"offer_id": "demo-2", "type": "postuler"}, headers=h)
+    client.post("/api/swipe/reactions/demo-2/brouillon", json={"reponses": []}, headers=h)
+    r = client.post("/api/offers/demo-2/generate", json={"kinds": ["cv"]}, headers=h)
+    assert r.status_code == 200, r.text
+    cands = client.get("/api/candidatures", headers=h).json()
+    assert len(cands) == 1 and cands[0]["statut"] == "a_envoyer" and cands[0]["fichiers"]["cv"]

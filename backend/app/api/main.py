@@ -10,12 +10,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from ..adapters.db.sqlalchemy_repo import profile_from_dict
-from ..application.services import NotFound, ProfileIncomplete, QuotaExceeded
+from ..application.services import AccountRequired, NotFound, ProfileIncomplete, QuotaExceeded
 from ..config import Settings
 from ..container import build
 from ..domain import ats
 from ..domain.errors import UserFacingError
 from ..domain.questions import Answer
+from ..domain.swipe import Raison, TypeReaction
 from ..domain.tracking import Statut
 from ..domain.models import ContractType, DocumentKind, OfferQuery, Profile
 
@@ -155,10 +156,10 @@ class GenerateIn(BaseModel):
 
 
 @app.get("/api/offers/{offer_id}/questions")
-def offer_questions(offer_id: str, owner: str = Depends(client_id)):
-    """Les 10 questions à poser pour cette offre (sans IA)."""
+def offer_questions(offer_id: str, n: int = 10, owner: str = Depends(client_id)):
+    """Les 10 questions à poser pour cette offre (sans IA). Le swipe n'en demande que 3 (n=3)."""
     try:
-        return [asdict(q) for q in container.generation.questions(owner, offer_id)]
+        return [asdict(q) for q in container.generation.questions(owner, offer_id)][:max(1, min(n, 10))]
     except NotFound:
         raise HTTPException(404, "Offre introuvable")
 
@@ -271,6 +272,119 @@ def delete_candidature(cand_id: str, owner: str = Depends(client_id)):
     except NotFound:
         raise HTTPException(404, "Candidature introuvable")
     return {"ok": True}
+
+
+# ---------------- Swipe d'offres (mobile) ----------------
+
+class PreferencesIn(BaseModel):
+    contrats: list[str] = Field(default_factory=list, max_length=5)
+    departements: list[str] = Field(default_factory=list, max_length=5)
+    mots_cles: str = Field(default="", max_length=100)
+
+
+class ReactionIn(BaseModel):
+    offer_id: str = Field(min_length=1, max_length=64)
+    type: TypeReaction
+
+
+class RaisonIn(BaseModel):
+    raison: Raison | None = None
+
+
+class RappelIn(BaseModel):
+    actif: bool
+
+
+class BrouillonIn(BaseModel):
+    reponses: list[AnswerIn] = Field(default_factory=list, max_length=10)
+
+
+def _reaction_out(r) -> dict:
+    d = asdict(r)
+    d.pop("owner_id")
+    d["rappel_du"] = r.rappel_du(container.swipe.today())
+    return d
+
+
+@app.get("/api/preferences")
+def get_preferences(owner: str = Depends(client_id)):
+    return asdict(container.swipe.preferences(owner))
+
+
+@app.put("/api/preferences")
+def put_preferences(body: PreferencesIn, owner: str = Depends(client_id)):
+    try:
+        return asdict(container.swipe.save_preferences(owner, body.contrats, body.departements, body.mots_cles))
+    except ValueError as e:
+        raise HTTPException(422, f"Préférences invalides : {e}")
+
+
+@app.get("/api/swipe/pile")
+def swipe_pile(taille: int = 20, owner: str = Depends(client_id)):
+    """Les prochaines offres à swiper : préférences appliquées, offres déjà swipées retirées."""
+    return [asdict(o) for o in container.swipe.pile(owner, max(1, min(taille, 50)))]
+
+
+@app.post("/api/swipe/reactions")
+def swipe_react(body: ReactionIn, owner: str = Depends(client_id)):
+    try:
+        return _reaction_out(container.swipe.reagir(owner, body.offer_id, body.type))
+    except AccountRequired:
+        raise HTTPException(401, "Crée ton compte pour postuler ou garder des favoris")
+    except NotFound:
+        raise HTTPException(404, "Offre introuvable")
+
+
+@app.patch("/api/swipe/reactions/{offer_id}/raison")
+def swipe_raison(offer_id: str, body: RaisonIn, owner: str = Depends(client_id)):
+    try:
+        return _reaction_out(container.swipe.donner_raison(owner, offer_id, body.raison))
+    except NotFound:
+        raise HTTPException(404, "Réaction introuvable")
+    except UserFacingError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.patch("/api/swipe/reactions/{offer_id}/rappel")
+def swipe_rappel(offer_id: str, body: RappelIn, owner: str = Depends(client_id)):
+    try:
+        return _reaction_out(container.swipe.rappel(owner, offer_id, body.actif))
+    except NotFound:
+        raise HTTPException(404, "Favori introuvable")
+    except UserFacingError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.delete("/api/swipe/reactions/{offer_id}")
+def swipe_undo(offer_id: str, owner: str = Depends(client_id)):
+    """Annuler (gratuit) : l'offre revient dans la pile."""
+    try:
+        container.swipe.annuler(owner, offer_id)
+    except NotFound:
+        raise HTTPException(404, "Réaction introuvable")
+    return {"ok": True}
+
+
+@app.post("/api/swipe/reactions/{offer_id}/brouillon")
+def swipe_brouillon(offer_id: str, body: BrouillonIn, owner: str = Depends(client_id)):
+    try:
+        c = container.swipe.brouillon(owner, offer_id, [Answer(a.question, a.reponse) for a in body.reponses])
+    except NotFound:
+        raise HTTPException(404, "Offre introuvable")
+    except UserFacingError as e:
+        raise HTTPException(422, str(e))
+    return _cand_out(c)
+
+
+@app.get("/api/swipe/passees")
+def swipe_passees(owner: str = Depends(client_id)):
+    """Offres passées des 30 derniers jours (masquées pour toujours, mais on peut les remettre)."""
+    return [_reaction_out(r) for r in container.swipe.passees(owner)]
+
+
+@app.get("/api/swipe/favoris")
+def swipe_favoris(owner: str = Depends(client_id)):
+    return [_reaction_out(r) for r in container.swipe.favoris(owner)]
 
 
 def _quota_subject(request: Request) -> str:

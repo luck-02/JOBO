@@ -2,9 +2,38 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import LinkImport from "../components/LinkImport";
+import SwipeDeck from "../components/SwipeDeck";
 import { api, CONTRAT_LABEL, type OfferSummary } from "../lib/api";
 
+// Sur mobile, l'Accueil devient le swipe d'offres ; sur grand écran, la liste reste.
+function useMobile(): boolean | null {
+  const [m, setM] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const on = () => setM(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return m;
+}
+
 export default function Accueil() {
+  const mobile = useMobile();
+  if (mobile === null) return <p className="muted">Chargement…</p>;
+  if (mobile) return (
+    <>
+      <SwipeDeck />
+      <details className="add-offer">
+        <summary>+ Ajouter une offre trouvée ailleurs (lien)</summary>
+        <LinkImport />
+      </details>
+    </>
+  );
+  return <Liste />;
+}
+
+function Liste() {
   const [q, setQ] = useState("");
   const [lieu, setLieu] = useState("");
   const [contrat, setContrat] = useState("alternance");

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .application.services import (
     CompanyService, GenerationService, ImportService, OfferService, OnboardingService, ProfileService,
-    TrackingService,
+    SwipeService, TrackingService,
 )
 from .config import Settings
 
@@ -21,6 +21,7 @@ class Container:
     onboarding: OnboardingService
     tracking: TrackingService
     storage: object
+    swipe: SwipeService
 
 
 def build(settings: Settings) -> Container:
@@ -50,7 +51,10 @@ def build(settings: Settings) -> Container:
     company_source = AnnuaireEntreprisesSource() if settings.company_provider == "annuaire" else DemoCompanySource()
 
     from .adapters.cv.reader import PdfDocxCvReader
-    from .adapters.db.sqlalchemy_repo import SqlCandidatureRepository, SqlImportedOfferRepository, SqlProfileRepository
+    from .adapters.db.sqlalchemy_repo import (
+        SqlCandidatureRepository, SqlImportedOfferRepository, SqlPreferencesRepository, SqlProfileRepository,
+        SqlReactionRepository,
+    )
     from .adapters.web.fetcher import SafePageFetcher, WebOfferLinkReader
     from .adapters.infra import InMemoryDailyLimiter, LocalFileStorage
     from .adapters.pdf.weasyprint_renderer import WeasyPrintRenderer
@@ -73,4 +77,6 @@ def build(settings: Settings) -> Container:
         limiter=InMemoryDailyLimiter(), daily_limit=settings.daily_generation_limit,
         max_iterations=settings.max_cv_iterations, tracking=tracking,
     )
-    return Container(offers, profiles, companies, generation, imports, onboarding, tracking, storage)
+    swipe = SwipeService(offers, profiles, tracking, SqlReactionRepository(settings.database_url),
+                         SqlPreferencesRepository(settings.database_url))
+    return Container(offers, profiles, companies, generation, imports, onboarding, tracking, storage, swipe)
